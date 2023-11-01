@@ -1074,6 +1074,7 @@ dependencies = [
  "log",
  "lru",
  "memmap2",
+ "nix 0.29.0",
  "num-traits",
  "page_size",
  "proc-maps",
