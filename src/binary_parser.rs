@@ -4,7 +4,9 @@ use std::path::Path;
 
 use anyhow::Error;
 use goblin::Object;
+use lazy_static::lazy_static;
 use memmap2::Mmap;
+use regex::Regex;
 
 use crate::utils::is_subrange;
 
@@ -116,6 +118,14 @@ pub fn parse_binary(filename: &Path, addr: u64, size: u64) -> Result<BinaryInfo,
         }
 
         Object::Elf(elf) => {
+            // When using LTO, LLVM may suffix local symbols to avoid conflicts
+            // (e.g. `Py_GetVersion.version.llvm.1990823568301052423`), which can
+            // break lookups to find these internal symbols by their expected names.
+            // In lieu of a better solution, just strip these suffixes.
+            lazy_static! {
+                static ref _LLVM_SUFFIX: Regex = Regex::new(r"[.]llvm[.][0-9]+$").unwrap();
+            }
+
             let strtab = elf.shdr_strtab;
             let bss_header = elf
                 .section_headers
@@ -204,7 +214,8 @@ pub fn parse_binary(filename: &Path, addr: u64, size: u64) -> Result<BinaryInfo,
                         continue;
                     }
                     if let Some(name) = elf.strtab.get_unsafe(sym.st_name) {
-                        symbols.insert(name.to_string(), pos);
+                        let name = _LLVM_SUFFIX.replace(name, "").to_string();
+                        symbols.insert(name, pos);
                     }
                 }
             }
@@ -226,7 +237,8 @@ pub fn parse_binary(filename: &Path, addr: u64, size: u64) -> Result<BinaryInfo,
                         continue;
                     }
                     if let Some(name) = elf.dynstrtab.get_unsafe(dynsym.st_name) {
-                        symbols.insert(name.to_string(), pos);
+                        let name = _LLVM_SUFFIX.replace(name, "").to_string();
+                        symbols.insert(name, pos);
                     }
                 }
             }
