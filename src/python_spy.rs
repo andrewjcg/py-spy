@@ -115,7 +115,7 @@ impl PythonSpy {
             if retries >= max_retries {
                 return Err(err);
             }
-            info!("Failed to connect to process, retrying. Error: {}", err);
+            info!("Failed to connect to process, retrying. Error: {:?}", err);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
