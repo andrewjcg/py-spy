@@ -20,6 +20,8 @@ use crate::stack_trace::StackTrace;
 struct Args<'a> {
     pub filename: &'a str,
     pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -29,7 +31,7 @@ struct Event<'a> {
     pub name: &'a str,
     pub ph: &'a str,
     pub pid: u64,
-    pub tid: u64,
+    pub tid: u32,
     pub ts: u64,
 }
 
@@ -71,6 +73,10 @@ pub struct Chrometrace {
     start_ts: Instant,
     prev_traces: HashMap<u64, StackTrace>,
     show_linenumbers: bool,
+    // We remap the thread IDs to be in the uint32 space, so they show up
+    // correctly in Perfetto instead of being dropped.
+    // https://github.com/google/perfetto/issues/886
+    thread_ids: HashMap<u64, u32>,
 }
 
 impl Chrometrace {
@@ -80,6 +86,7 @@ impl Chrometrace {
             start_ts: Instant::now(),
             prev_traces: HashMap::new(),
             show_linenumbers,
+            thread_ids: HashMap::new(),
         })
     }
 
@@ -97,7 +104,7 @@ impl Chrometrace {
         ts: u64,
     ) -> Event<'a> {
         Event {
-            tid: trace.thread_id,
+            tid: self.get_thread_id(trace),
             pid: trace.pid as u64,
             name: frame.name.as_str(),
             cat: "py-spy",
@@ -110,8 +117,14 @@ impl Chrometrace {
                 } else {
                     None
                 },
+                name: None,
             },
         }
+    }
+
+    fn get_thread_id(&self, trace: &StackTrace) -> u32 {
+        let thread_id = trace.thread_id;
+        self.thread_ids[&thread_id]
     }
 
     fn record_events(
@@ -146,6 +159,34 @@ impl Chrometrace {
         Ok(())
     }
 
+    fn record_new_thread(&mut self, trace: &StackTrace) -> Result<(), Error> {
+        if !self.thread_ids.contains_key(&trace.thread_id) {
+            let thread_id = trace.thread_id;
+
+            // remap IDs to be in the uint32 space
+            let remapped_id = self.thread_ids.len() as u32;
+            self.thread_ids.insert(thread_id, remapped_id);
+
+            let name =
+                thread_id.to_string() + ": " + trace.thread_name.as_deref().unwrap_or_default();
+
+            self.writer.write(Event {
+                args: Args {
+                    filename: "",
+                    line: None,
+                    name: Some(name),
+                },
+                cat: "py-spy",
+                name: "thread_name",
+                ph: "M",
+                pid: trace.pid as u64,
+                tid: remapped_id,
+                ts: 0,
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn increment(&mut self, traces: Vec<StackTrace>) -> Result<(), Error> {
         let now = self.start_ts.elapsed().as_micros() as u64;
 
@@ -154,6 +195,8 @@ impl Chrometrace {
 
         // Process each new trace.
         for trace in traces.into_iter() {
+            self.record_new_thread(&trace)?;
+
             let prev_trace = self.prev_traces.remove(&trace.thread_id);
             self.record_events(now, &trace, prev_trace)?;
             new_prev_traces.insert(trace.thread_id, trace);
